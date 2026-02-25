@@ -18,10 +18,11 @@ A terminal UI for scanning, viewing, and updating dependencies across multiple e
 
 ## Installation
 
-### Homebrew (macOS)
+### Homebrew (macOS/Linux)
 
 ```bash
-brew install Joselay/tap/lazydeps
+brew tap Joselay/tap
+brew install lazydeps
 ```
 
 ### Download binary
