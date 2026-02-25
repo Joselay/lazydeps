@@ -11,7 +11,7 @@ import (
 
 func (m Model) View() string {
 	if m.width == 0 {
-		return "Initializing..."
+		return ""
 	}
 
 	var sections []string
@@ -20,7 +20,9 @@ func (m Model) View() string {
 	sections = append(sections, m.renderTitle())
 
 	if m.loading {
-		sections = append(sections, fmt.Sprintf("\n  %s Scanning dependencies...\n", m.spinner.View()))
+		spinner := m.spinner.View()
+		msg := lipgloss.NewStyle().Foreground(colorMuted).Render("Scanning dependencies...")
+		sections = append(sections, fmt.Sprintf("\n  %s %s\n", spinner, msg))
 		return lipgloss.JoinVertical(lipgloss.Left, sections...)
 	}
 
@@ -57,25 +59,16 @@ func (m Model) View() string {
 
 func (m Model) renderTitle() string {
 	title := titleStyle.Render(" lazydeps ")
-	ecosystems := []string{}
+
+	// Ecosystem badges
+	var badges []string
 	for _, eco := range m.ecosystems {
-		switch eco {
-		case scanner.EcosystemGo:
-			ecosystems = append(ecosystems, goBadge)
-		case scanner.EcosystemNpm:
-			ecosystems = append(ecosystems, npmBadge)
-		case scanner.EcosystemPip:
-			ecosystems = append(ecosystems, pipBadge)
-		case scanner.EcosystemCargo:
-			ecosystems = append(ecosystems, cargoBadge)
-		case scanner.EcosystemBun:
-			ecosystems = append(ecosystems, bunBadge)
-		}
+		badges = append(badges, m.titleBadge(eco))
 	}
 
 	ecoStr := ""
-	if len(ecosystems) > 0 {
-		ecoStr = " " + strings.Join(ecosystems, " ")
+	if len(badges) > 0 {
+		ecoStr = " " + strings.Join(badges, " ")
 	}
 
 	right := subtitleStyle.Render(m.dir)
@@ -87,18 +80,42 @@ func (m Model) renderTitle() string {
 	return title + ecoStr + strings.Repeat(" ", gap) + right
 }
 
+func (m Model) titleBadge(eco scanner.Ecosystem) string {
+	switch eco {
+	case scanner.EcosystemGo:
+		return lipgloss.NewStyle().Foreground(colorGo).Bold(true).Render("Go")
+	case scanner.EcosystemNpm:
+		return lipgloss.NewStyle().Foreground(colorNpm).Bold(true).Render("npm")
+	case scanner.EcosystemPip:
+		return lipgloss.NewStyle().Foreground(colorPip).Bold(true).Render("pip")
+	case scanner.EcosystemCargo:
+		return lipgloss.NewStyle().Foreground(colorCargo).Bold(true).Render("cargo")
+	case scanner.EcosystemBun:
+		return lipgloss.NewStyle().Foreground(colorBun).Bold(true).Render("bun")
+	default:
+		return "?"
+	}
+}
+
 func (m Model) renderTabs() string {
 	var tabs []string
 	for i, name := range tabNames {
 		count := m.countForTab(tab(i))
-		label := fmt.Sprintf("%s (%d)", name, count)
+		label := fmt.Sprintf("%s %d", name, count)
 		if tab(i) == m.activeTab {
 			tabs = append(tabs, activeTabStyle.Render(label))
 		} else {
 			tabs = append(tabs, inactiveTabStyle.Render(label))
 		}
 	}
-	return " " + strings.Join(tabs, " ")
+	row := lipgloss.JoinHorizontal(lipgloss.Bottom, tabs...)
+	// Extend the bottom border across the full width
+	rowWidth := lipgloss.Width(row)
+	if rowWidth < m.width {
+		fill := tabBarStyle.Width(m.width - rowWidth).Render("")
+		row = lipgloss.JoinHorizontal(lipgloss.Bottom, row, fill)
+	}
+	return row
 }
 
 func (m Model) countForTab(t tab) int {
@@ -126,20 +143,16 @@ func (m Model) renderFilterBar() string {
 
 func (m Model) renderTable() string {
 	if len(m.filtered) == 0 {
-		return "\n  " + subtitleStyle.Render("No dependencies found for this view.") + "\n"
+		empty := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Render("No dependencies found for this view.")
+		return "\n  " + empty + "\n"
 	}
 
 	var b strings.Builder
 
 	// Header
-	header := fmt.Sprintf("  %-4s %-40s %-16s %-16s %s",
-		"ECO", "PACKAGE", "CURRENT", "LATEST", "STATUS")
-	b.WriteString(lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Bold(true).
-		Render(header))
-	b.WriteString("\n")
-	b.WriteString("  " + strings.Repeat("─", min(m.width-4, 100)))
+	header := fmt.Sprintf("  %-5s %-40s %-16s %-16s %s",
+		"", "PACKAGE", "CURRENT", "LATEST", "STATUS")
+	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
 	tableHeight := m.tableHeight()
@@ -150,7 +163,8 @@ func (m Model) renderTable() string {
 
 	for i := m.offset; i < end; i++ {
 		dep := m.filtered[i]
-		row := m.renderRow(dep, i == m.cursor)
+		isAlt := (i-m.offset)%2 == 1
+		row := m.renderRow(dep, i == m.cursor, isAlt)
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
@@ -161,85 +175,111 @@ func (m Model) renderTable() string {
 		if len(m.filtered)-tableHeight > 0 {
 			pct = m.offset * 100 / (len(m.filtered) - tableHeight)
 		}
-		scrollInfo := fmt.Sprintf("  %d-%d of %d (%d%%)",
-			m.offset+1, end, len(m.filtered), pct)
-		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(scrollInfo))
+		scrollInfo := fmt.Sprintf("%d–%d of %d", m.offset+1, end, len(m.filtered))
+
+		// Mini scrollbar
+		barHeight := tableHeight
+		thumbPos := 0
+		if len(m.filtered)-tableHeight > 0 {
+			thumbPos = m.offset * (barHeight - 1) / (len(m.filtered) - tableHeight)
+		}
+		_ = thumbPos // scrollbar rendered inline in rows if desired
+
+		right := scrollStyle.Render(scrollInfo)
+		bar := scrollStyle.Render(fmt.Sprintf(" %d%%", pct))
+		b.WriteString(strings.Repeat(" ", max(2, m.width-lipgloss.Width(right)-lipgloss.Width(bar)-2)))
+		b.WriteString(right)
+		b.WriteString(bar)
 	}
 
 	return b.String()
 }
 
-func (m Model) renderRow(dep scanner.Dependency, selected bool) string {
+func (m Model) renderRow(dep scanner.Dependency, selected bool, isAlt bool) string {
 	name := dep.Name
 	if len(name) > 38 {
 		name = name[:35] + "..."
 	}
 
 	current := dep.Current
+	if len(current) > 14 {
+		current = current[:14]
+	}
 	latest := dep.Latest
+	if len(latest) > 14 {
+		latest = latest[:14]
+	}
 
 	ecoLabel := m.ecosystemLabel(dep.Ecosystem)
-	statusLabel := "OK"
+
+	// Status with icons
+	var statusLabel string
 	if dep.Vulnerable {
-		statusLabel = "VULN"
+		statusLabel = "⚠ VULN"
 	} else if dep.Outdated {
-		statusLabel = "UPDATE"
+		statusLabel = "⬆ UPDATE"
+	} else {
+		statusLabel = "✓ OK"
 	}
 
 	if selected {
-		// Plain text for selected row — no nested styles so background covers full width
-		row := fmt.Sprintf("▸ %-4s %-40s %-16s %-16s %s",
-			ecoLabel, name, current, latest, statusLabel)
-		return selectedRowStyle.Width(min(m.width, 104)).Render(row)
+		prefix := "▸"
+		row := fmt.Sprintf("%s %-5s %-40s %-16s %-16s %s",
+			prefix, ecoLabel, name, current, latest, statusLabel)
+		return selectedRowStyle.Width(min(m.width, 110)).Render(row)
 	}
 
-	// Unselected: use colored badges and status
+	// Unselected: colored ecosystem + status
 	eco := m.ecosystemBadge(dep.Ecosystem)
-	status := ""
+	var status string
 	if dep.Vulnerable {
-		status = vulnerableStyle.Render(statusLabel)
+		status = vulnerableStyle.Render("⚠ VULN")
 	} else if dep.Outdated {
-		status = outdatedStyle.Render(statusLabel)
+		status = outdatedStyle.Render("⬆ UPDATE")
 	} else {
-		status = upToDateStyle.Render(statusLabel)
+		status = upToDateStyle.Render("✓ OK")
 	}
 
-	row := fmt.Sprintf("  %-4s %-40s %-16s %-16s %s",
+	row := fmt.Sprintf("  %-5s %-40s %-16s %-16s %s",
 		eco, name, current, latest, status)
+
+	if isAlt {
+		return altRowStyle.Width(min(m.width, 110)).Render(row)
+	}
 	return normalRowStyle.Render(row)
 }
 
 func (m Model) ecosystemLabel(eco scanner.Ecosystem) string {
 	switch eco {
 	case scanner.EcosystemGo:
-		return "GO"
+		return "Go"
 	case scanner.EcosystemNpm:
-		return "NPM"
+		return "npm"
 	case scanner.EcosystemPip:
-		return "PIP"
+		return "pip"
 	case scanner.EcosystemCargo:
-		return "RST"
+		return "cargo"
 	case scanner.EcosystemBun:
-		return "BUN"
+		return "bun"
 	default:
-		return "???"
+		return "?"
 	}
 }
 
 func (m Model) ecosystemBadge(eco scanner.Ecosystem) string {
 	switch eco {
 	case scanner.EcosystemGo:
-		return lipgloss.NewStyle().Foreground(colorSecondary).Render("GO")
+		return lipgloss.NewStyle().Foreground(colorGo).Render("Go")
 	case scanner.EcosystemNpm:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#CB3837")).Render("NPM")
+		return lipgloss.NewStyle().Foreground(colorNpm).Render("npm")
 	case scanner.EcosystemPip:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#3776AB")).Render("PIP")
+		return lipgloss.NewStyle().Foreground(colorPip).Render("pip")
 	case scanner.EcosystemCargo:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#DEA584")).Render("RST")
+		return lipgloss.NewStyle().Foreground(colorCargo).Render("cargo")
 	case scanner.EcosystemBun:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FBF0DF")).Render("BUN")
+		return lipgloss.NewStyle().Foreground(colorBun).Render("bun")
 	default:
-		return "???"
+		return "?"
 	}
 }
 
@@ -250,36 +290,43 @@ func (m Model) renderDetail() string {
 	dep := m.filtered[m.cursor]
 
 	var lines []string
-	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(dep.Name))
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("Ecosystem:  %s", string(dep.Ecosystem)))
-	lines = append(lines, fmt.Sprintf("Current:    %s", dep.Current))
-	lines = append(lines, fmt.Sprintf("Latest:     %s", dep.Latest))
 
+	// Package name
+	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(colorWhite)
+	lines = append(lines, nameStyle.Render(dep.Name))
+	lines = append(lines, "")
+
+	// Info rows
+	lines = append(lines, detailLabelStyle.Render("Ecosystem")+detailValueStyle.Render(string(dep.Ecosystem)))
+	lines = append(lines, detailLabelStyle.Render("Current")+detailValueStyle.Render(dep.Current))
+	lines = append(lines, detailLabelStyle.Render("Latest")+detailValueStyle.Render(dep.Latest))
+
+	depType := "direct"
 	if dep.Indirect {
-		lines = append(lines, fmt.Sprintf("Type:       %s", "indirect/dev"))
-	} else {
-		lines = append(lines, fmt.Sprintf("Type:       %s", "direct"))
+		depType = "dev / indirect"
 	}
+	lines = append(lines, detailLabelStyle.Render("Type")+detailValueStyle.Render(depType))
 
 	if dep.Outdated {
 		lines = append(lines, "")
-		lines = append(lines, outdatedStyle.Render(fmt.Sprintf("⚠ Update available: %s → %s", dep.Current, dep.Latest)))
+		arrow := outdatedStyle.Render(fmt.Sprintf("⬆ Update available: %s → %s", dep.Current, dep.Latest))
+		lines = append(lines, arrow)
 	}
 
 	if dep.Vulnerable {
 		lines = append(lines, "")
-		lines = append(lines, vulnerableStyle.Render("✗ VULNERABILITY DETECTED"))
+		lines = append(lines, vulnerableStyle.Render("⚠ VULNERABILITY DETECTED"))
 		if dep.VulnInfo != "" {
-			lines = append(lines, vulnerableStyle.Render("  "+dep.VulnInfo))
+			lines = append(lines, lipgloss.NewStyle().Foreground(colorDanger).Render("  "+dep.VulnInfo))
 		}
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, helpStyle.Render("Press u to update • esc to go back"))
+	hint := helpStyle.Render("u update  •  esc back")
+	lines = append(lines, hint)
 
 	content := strings.Join(lines, "\n")
-	panel := detailBorderStyle.Width(min(m.width-4, 70)).Render(content)
+	panel := detailBorderStyle.Width(min(m.width-4, 64)).Render(content)
 	return "\n" + panel + "\n"
 }
 
@@ -287,14 +334,14 @@ func (m Model) renderConfirm() string {
 	if m.confirmDep == nil {
 		return ""
 	}
-	prompt := fmt.Sprintf("  Update %s from %s to %s? [y/N]",
+	prompt := fmt.Sprintf("  Update %s from %s → %s? [y/N]",
 		m.confirmDep.Name, m.confirmDep.Current, m.confirmDep.Latest)
 	return "\n" + promptStyle.Render(prompt)
 }
 
 func (m Model) renderConfirmAll() string {
 	outdated := m.outdatedDeps()
-	prompt := fmt.Sprintf("  Update all %d outdated deps? [y/N]", len(outdated))
+	prompt := fmt.Sprintf("  Update all %d outdated dependencies? [y/N]", len(outdated))
 	return "\n" + promptStyle.Render(prompt)
 }
 
@@ -302,26 +349,43 @@ func (m Model) renderStatusBar() string {
 	if m.statusMsg == "" {
 		return ""
 	}
-	bar := statusBarStyle.Width(m.width).Render(m.statusMsg)
-	return bar
+	return statusBarStyle.Width(m.width).Render(m.statusMsg)
 }
 
 func (m Model) renderHelp() string {
 	if m.showHelp {
-		help := []string{
-			"",
-			helpStyle.Render("  Keybindings:"),
-			helpStyle.Render("  ↑/k, ↓/j    Navigate        tab/l, S-tab/H  Switch tabs"),
-			helpStyle.Render("  enter        View details    u               Update dep"),
-		helpStyle.Render("  U            Update all      v               Vuln only"),
-			helpStyle.Render("  /            Filter"),
-			helpStyle.Render("  r            Refresh         ?               Toggle help"),
-			helpStyle.Render("  q, ctrl+c    Quit"),
-			"",
+		bindings := []struct{ key, desc string }{
+			{"↑/k  ↓/j", "Navigate list"},
+			{"tab / S-tab", "Switch tabs"},
+			{"enter", "View details"},
+			{"u", "Update dependency"},
+			{"U", "Update all outdated"},
+			{"/", "Filter by name"},
+			{"v", "Toggle vuln only"},
+			{"r", "Refresh scan"},
+			{"?", "Toggle help"},
+			{"q", "Quit"},
 		}
-		return strings.Join(help, "\n")
+
+		var rows []string
+		for _, b := range bindings {
+			rows = append(rows, helpKeyStyle.Render(b.key)+helpDescStyle.Render(b.desc))
+		}
+
+		content := strings.Join(rows, "\n")
+		panel := helpPanelStyle.Width(min(m.width-4, 40)).Render(content)
+		return "\n" + panel
 	}
-	return helpStyle.Render("  ↑↓ navigate • tab switch • enter details • u update • U update all • / filter • ? help • q quit")
+
+	keys := []string{"↑↓", "tab", "enter", "u", "U", "/", "?", "q"}
+	labels := []string{"navigate", "tabs", "details", "update", "update all", "filter", "help", "quit"}
+
+	var parts []string
+	for i := range keys {
+		k := lipgloss.NewStyle().Foreground(colorTextBright).Render(keys[i])
+		parts = append(parts, k+" "+helpDescStyle.Render(labels[i]))
+	}
+	return helpStyle.Render("  " + strings.Join(parts, "  "))
 }
 
 func min(a, b int) int {
