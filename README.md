@@ -2,7 +2,7 @@
 
 A terminal UI for scanning, viewing, and updating dependencies across multiple ecosystems.
 
-![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![License](https://img.shields.io/github/license/Joselay/lazydeps)
 ![Release](https://img.shields.io/github/v/release/Joselay/lazydeps)
 
@@ -28,7 +28,7 @@ brew install Joselay/tap/lazydeps
 
 Grab the latest binary from [Releases](https://github.com/Joselay/lazydeps/releases) and add it to your `PATH`.
 
-### From source (requires Go 1.25+)
+### From source (requires Go 1.26+)
 
 ```bash
 go install github.com/Joselay/lazydeps@latest
