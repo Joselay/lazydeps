@@ -13,16 +13,17 @@ builds:
       - arm64
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 brews:
   - repository:
       owner: Joselay
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/Joselay/lazydeps
     description: TUI dependency scanner for Go, npm, Bun, pip, and Cargo
     license: MIT
