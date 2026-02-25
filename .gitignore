@@ -19,3 +19,6 @@ vendor/
 # Environment
 .env
 .env.*
+
+# Local overrides
+*.local.md
