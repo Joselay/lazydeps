@@ -1,0 +1,35 @@
+version: 2
+
+builds:
+  - binary: lazydeps
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+brews:
+  - repository:
+      owner: Joselay
+      name: homebrew-tap
+    homepage: https://github.com/Joselay/lazydeps
+    description: TUI dependency scanner for Go, npm, Bun, pip, and Cargo
+    license: MIT
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

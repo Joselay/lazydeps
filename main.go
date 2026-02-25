@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/smaetongmenglay/lazydeps/internal/ui"
+	"github.com/Joselay/lazydeps/internal/ui"
 )
 
 func main() {

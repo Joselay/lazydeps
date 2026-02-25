@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/smaetongmenglay/lazydeps/internal/scanner"
+	"github.com/Joselay/lazydeps/internal/scanner"
 )
 
 func (m Model) View() string {

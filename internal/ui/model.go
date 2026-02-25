@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/smaetongmenglay/lazydeps/internal/scanner"
+	"github.com/Joselay/lazydeps/internal/scanner"
 )
 
 type viewMode int

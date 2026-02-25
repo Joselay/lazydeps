@@ -1,4 +1,4 @@
-module github.com/smaetongmenglay/lazydeps
+module github.com/Joselay/lazydeps
 
 go 1.25.0
 
