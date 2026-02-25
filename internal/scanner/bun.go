@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type BunScanner struct{}
@@ -23,10 +24,10 @@ func (b *BunScanner) Detect(dir string) bool {
 }
 
 type bunOutdated struct {
-	Name           string `json:"name"`
-	Current        string `json:"current"`
-	Update         string `json:"update"`
-	Latest         string `json:"latest"`
+	Name    string `json:"name"`
+	Current string `json:"current"`
+	Update  string `json:"update"`
+	Latest  string `json:"latest"`
 }
 
 func (b *BunScanner) Scan(dir string) ([]Dependency, error) {
@@ -34,15 +35,11 @@ func (b *BunScanner) Scan(dir string) ([]Dependency, error) {
 		return nil, nil
 	}
 
-	var deps []Dependency
-
-	// bun outdated outputs a table by default; no --json yet,
-	// so we parse package.json and use bun pm ls for installed versions
-	deps = b.scanOutdated(dir)
+	deps := b.scanOutdated(dir)
 
 	// Fall back to package.json parsing if nothing returned
 	if len(deps) == 0 {
-		deps = b.parsePackageJSON(dir)
+		deps = b.fallbackPackageJSON(dir)
 	}
 
 	return deps, nil
@@ -50,8 +47,9 @@ func (b *BunScanner) Scan(dir string) ([]Dependency, error) {
 
 func (b *BunScanner) scanOutdated(dir string) []Dependency {
 	// bun outdated (available since bun 1.1.28) outputs text table
-	out, err := runCommand(dir, "bun", "outdated")
-	if err != nil || out == "" {
+	// bun outdated exits non-zero when there ARE outdated packages, so ignore the error
+	out, _ := runCommand(dir, "bun", "outdated")
+	if out == "" {
 		return nil
 	}
 
@@ -103,21 +101,38 @@ func (b *BunScanner) scanOutdated(dir string) []Dependency {
 		deps = append(deps, dep)
 	}
 
-	// Also add up-to-date deps from package.json
+	// Also add deps from package.json not covered by bun outdated,
+	// looking up their real latest version from the registry
 	existing := make(map[string]bool)
 	for _, d := range deps {
 		existing[d.Name] = true
 	}
-	for _, d := range b.parsePackageJSON(dir) {
-		if !existing[d.Name] {
-			deps = append(deps, d)
-		}
+
+	uncovered := b.getUncoveredPackages(dir, existing)
+	if len(uncovered) > 0 {
+		deps = append(deps, b.lookupLatestVersions(dir, uncovered)...)
 	}
 
 	return deps
 }
 
-func (b *BunScanner) parsePackageJSON(dir string) []Dependency {
+// fallbackPackageJSON is used when bun outdated fails entirely.
+// Looks up latest versions from the npm registry for all packages.
+func (b *BunScanner) fallbackPackageJSON(dir string) []Dependency {
+	uncovered := b.getUncoveredPackages(dir, nil)
+	if len(uncovered) == 0 {
+		return nil
+	}
+	return b.lookupLatestVersions(dir, uncovered)
+}
+
+type uncoveredPkg struct {
+	name string
+	ver  string
+	dev  bool
+}
+
+func (b *BunScanner) getUncoveredPackages(dir string, existing map[string]bool) []uncoveredPkg {
 	pkgPath := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
@@ -132,22 +147,73 @@ func (b *BunScanner) parsePackageJSON(dir string) []Dependency {
 		return nil
 	}
 
-	var deps []Dependency
+	var uncovered []uncoveredPkg
 	for name, ver := range pkg.Dependencies {
-		deps = append(deps, Dependency{
-			Name:      name,
-			Current:   ver,
-			Latest:    ver,
-			Ecosystem: EcosystemBun,
-		})
+		if existing == nil || !existing[name] {
+			uncovered = append(uncovered, uncoveredPkg{name, ver, false})
+		}
 	}
 	for name, ver := range pkg.DevDependencies {
+		if existing == nil || !existing[name] {
+			uncovered = append(uncovered, uncoveredPkg{name, ver, true})
+		}
+	}
+	return uncovered
+}
+
+func (b *BunScanner) lookupLatestVersions(dir string, uncovered []uncoveredPkg) []Dependency {
+	// Use npm view to get latest versions (bun uses the npm registry)
+	viewCmd := "npm"
+	if !commandExists("npm") {
+		viewCmd = "bun"
+	}
+
+	type result struct {
+		latest string
+	}
+	results := make([]result, len(uncovered))
+	var wg sync.WaitGroup
+	for i, pkg := range uncovered {
+		wg.Add(1)
+		go func(idx int, pkgName string) {
+			defer wg.Done()
+			var latest string
+			var err error
+			if viewCmd == "npm" {
+				latest, err = runCommand(dir, "npm", "view", pkgName, "version")
+			} else {
+				latest, err = runCommand(dir, "bun", "pm", "info", pkgName, "--json")
+				// bun pm info returns JSON; extract version if needed
+				if err == nil && latest != "" {
+					var info struct {
+						Version string `json:"version"`
+					}
+					if json.Unmarshal([]byte(latest), &info) == nil && info.Version != "" {
+						latest = info.Version
+					}
+				}
+			}
+			if err == nil && latest != "" {
+				results[idx] = result{latest: latest}
+			}
+		}(i, pkg.name)
+	}
+	wg.Wait()
+
+	var deps []Dependency
+	for i, pkg := range uncovered {
+		current := cleanVersion(pkg.ver)
+		latest := current
+		if results[i].latest != "" {
+			latest = results[i].latest
+		}
 		deps = append(deps, Dependency{
-			Name:      name,
-			Current:   ver,
-			Latest:    ver,
+			Name:      pkg.name,
+			Current:   current,
+			Latest:    latest,
 			Ecosystem: EcosystemBun,
-			Indirect:  true,
+			Outdated:  current != latest,
+			Indirect:  pkg.dev,
 		})
 	}
 	return deps

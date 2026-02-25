@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 )
 
 type NpmScanner struct{}
@@ -39,19 +41,26 @@ func (n *NpmScanner) Scan(dir string) ([]Dependency, error) {
 	// npm outdated exits non-zero when there ARE outdated packages
 
 	var deps []Dependency
+	outdatedMap := make(map[string]bool)
 
 	if out != "" {
 		var outdated map[string]npmOutdated
 		if err := json.Unmarshal([]byte(out), &outdated); err == nil {
 			for name, info := range outdated {
+				current := info.Current
+				// When node_modules is absent, npm omits "current"; use "wanted" instead
+				if current == "" {
+					current = info.Wanted
+				}
 				dep := Dependency{
 					Name:      name,
-					Current:   info.Current,
+					Current:   current,
 					Latest:    info.Latest,
 					Ecosystem: EcosystemNpm,
-					Outdated:  info.Current != info.Latest,
+					Outdated:  current != info.Latest,
 				}
 				deps = append(deps, dep)
+				outdatedMap[name] = true
 			}
 		}
 	}
@@ -65,30 +74,64 @@ func (n *NpmScanner) Scan(dir string) ([]Dependency, error) {
 			DevDependencies map[string]string `json:"devDependencies"`
 		}
 		if json.Unmarshal(data, &pkg) == nil {
-			existing := make(map[string]bool)
-			for _, d := range deps {
-				existing[d.Name] = true
+			// Collect packages not covered by npm outdated
+			var uncovered []struct {
+				name string
+				ver  string
+				dev  bool
 			}
 			for name, ver := range pkg.Dependencies {
-				if !existing[name] {
-					deps = append(deps, Dependency{
-						Name:      name,
-						Current:   ver,
-						Latest:    ver,
-						Ecosystem: EcosystemNpm,
-					})
+				if !outdatedMap[name] {
+					uncovered = append(uncovered, struct {
+						name string
+						ver  string
+						dev  bool
+					}{name, ver, false})
 				}
 			}
 			for name, ver := range pkg.DevDependencies {
-				if !existing[name] {
-					deps = append(deps, Dependency{
-						Name:      name,
-						Current:   ver,
-						Latest:    ver,
-						Ecosystem: EcosystemNpm,
-						Indirect:  true,
-					})
+				if !outdatedMap[name] {
+					uncovered = append(uncovered, struct {
+						name string
+						ver  string
+						dev  bool
+					}{name, ver, true})
 				}
+			}
+
+			// Look up latest versions in parallel
+			type result struct {
+				idx    int
+				latest string
+			}
+			results := make([]result, len(uncovered))
+			var wg sync.WaitGroup
+			for i, pkg := range uncovered {
+				wg.Add(1)
+				go func(idx int, pkgName string) {
+					defer wg.Done()
+					latest, err := runCommand(dir, "npm", "view", pkgName, "version")
+					if err == nil && latest != "" {
+						results[idx] = result{idx: idx, latest: latest}
+					}
+				}(i, pkg.name)
+			}
+			wg.Wait()
+
+			for i, pkg := range uncovered {
+				current := cleanVersion(pkg.ver)
+				latest := current
+				if results[i].latest != "" {
+					latest = results[i].latest
+				}
+				deps = append(deps, Dependency{
+					Name:      pkg.name,
+					Current:   current,
+					Latest:    latest,
+					Ecosystem: EcosystemNpm,
+					Outdated:  current != latest,
+					Indirect:  pkg.dev,
+				})
 			}
 		}
 	}
@@ -97,6 +140,15 @@ func (n *NpmScanner) Scan(dir string) ([]Dependency, error) {
 	n.checkVulns(dir, deps)
 
 	return deps, nil
+}
+
+// cleanVersion strips semver range prefixes (^, ~, >=, etc.) from a version string.
+func cleanVersion(v string) string {
+	v = strings.TrimSpace(v)
+	for len(v) > 0 && (v[0] == '^' || v[0] == '~' || v[0] == '>' || v[0] == '=' || v[0] == '<') {
+		v = v[1:]
+	}
+	return strings.TrimSpace(v)
 }
 
 func (n *NpmScanner) checkVulns(dir string, deps []Dependency) {

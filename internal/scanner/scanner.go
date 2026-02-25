@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -66,9 +67,12 @@ func commandExists(name string) bool {
 func runCommand(dir, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if err != nil {
-		return string(out), fmt.Errorf("%s: %w\n%s", name, err, string(out))
+		return stdout.String(), fmt.Errorf("%s: %w\n%s", name, err, stderr.String())
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(stdout.String()), nil
 }

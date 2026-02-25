@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type CargoScanner struct{}
@@ -66,7 +67,11 @@ func (c *CargoScanner) parseCargo(dir string) ([]Dependency, error) {
 		return nil, err
 	}
 
-	var deps []Dependency
+	type cargoPkg struct {
+		name    string
+		version string
+	}
+	var packages []cargoPkg
 	inDeps := false
 
 	for _, line := range strings.Split(string(data), "\n") {
@@ -84,14 +89,53 @@ func (c *CargoScanner) parseCargo(dir string) ([]Dependency, error) {
 			name := strings.TrimSpace(parts[0])
 			version := strings.Trim(strings.TrimSpace(parts[1]), "\"")
 			if name != "" {
-				deps = append(deps, Dependency{
-					Name:      name,
-					Current:   version,
-					Latest:    version,
-					Ecosystem: EcosystemCargo,
-				})
+				packages = append(packages, cargoPkg{name, version})
 			}
 		}
+	}
+
+	// Look up latest versions from crates.io in parallel
+	type result struct {
+		latest string
+	}
+	results := make([]result, len(packages))
+	var wg sync.WaitGroup
+	for i, pkg := range packages {
+		wg.Add(1)
+		go func(idx int, pkgName string) {
+			defer wg.Done()
+			out, err := runCommand(dir, "cargo", "search", pkgName, "--limit", "1")
+			if err == nil && out != "" {
+				// Output format: crateName = "X.Y.Z"    # description
+				for _, line := range strings.Split(out, "\n") {
+					if strings.HasPrefix(line, pkgName+" ") || strings.HasPrefix(line, pkgName+"=") {
+						if start := strings.Index(line, "\""); start != -1 {
+							if end := strings.Index(line[start+1:], "\""); end != -1 {
+								results[idx] = result{latest: line[start+1 : start+1+end]}
+							}
+						}
+						break
+					}
+				}
+			}
+		}(i, pkg.name)
+	}
+	wg.Wait()
+
+	var deps []Dependency
+	for i, pkg := range packages {
+		current := cleanVersion(pkg.version)
+		latest := current
+		if results[i].latest != "" {
+			latest = results[i].latest
+		}
+		deps = append(deps, Dependency{
+			Name:      pkg.name,
+			Current:   current,
+			Latest:    latest,
+			Ecosystem: EcosystemCargo,
+			Outdated:  current != latest,
+		})
 	}
 
 	return deps, nil

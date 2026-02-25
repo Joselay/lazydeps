@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type PipScanner struct{}
@@ -22,9 +23,9 @@ func (p *PipScanner) Detect(dir string) bool {
 }
 
 type pipOutdated struct {
-	Name           string `json:"name"`
-	Version        string `json:"version"`
-	LatestVersion  string `json:"latest_version"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	LatestVersion string `json:"latest_version"`
 }
 
 func (p *PipScanner) Scan(dir string) ([]Dependency, error) {
@@ -65,16 +66,23 @@ func (p *PipScanner) Scan(dir string) ([]Dependency, error) {
 		}
 	}
 
-	// Also parse requirements.txt for context
+	// Also parse requirements.txt for packages not covered by pip list
 	reqPath := filepath.Join(dir, "requirements.txt")
 	if data, err := os.ReadFile(reqPath); err == nil {
 		existing := make(map[string]bool)
 		for _, d := range deps {
 			existing[strings.ToLower(d.Name)] = true
 		}
+
+		type reqPkg struct {
+			name    string
+			version string
+		}
+		var uncovered []reqPkg
+
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
 				continue
 			}
 			parts := strings.SplitN(line, "==", 2)
@@ -87,14 +95,53 @@ func (p *PipScanner) Scan(dir string) ([]Dependency, error) {
 			}
 			name = strings.TrimSpace(name)
 			if name != "" && !existing[strings.ToLower(name)] {
+				version := ""
+				if len(parts) == 2 {
+					version = strings.TrimSpace(parts[1])
+				}
+				uncovered = append(uncovered, reqPkg{name, version})
+			}
+		}
+
+		// Look up latest versions in parallel
+		if len(uncovered) > 0 {
+			type result struct {
+				latest string
+			}
+			results := make([]result, len(uncovered))
+			var wg sync.WaitGroup
+			for i, pkg := range uncovered {
+				wg.Add(1)
+				go func(idx int, pkgName string) {
+					defer wg.Done()
+					latest, err := runCommand(dir, pipCmd, "index", "versions", pkgName)
+					if err == nil && latest != "" {
+						// Output format: "pkgName (X.Y.Z)"
+						// Extract version from parentheses
+						if start := strings.Index(latest, "("); start != -1 {
+							if end := strings.Index(latest[start:], ")"); end != -1 {
+								results[idx] = result{latest: latest[start+1 : start+end]}
+							}
+						}
+					}
+				}(i, pkg.name)
+			}
+			wg.Wait()
+
+			for i, pkg := range uncovered {
 				dep := Dependency{
-					Name:      name,
+					Name:      pkg.name,
 					Ecosystem: EcosystemPip,
 				}
-				if len(parts) == 2 {
-					dep.Current = strings.TrimSpace(parts[1])
+				if pkg.version != "" {
+					dep.Current = pkg.version
+				}
+				if results[i].latest != "" {
+					dep.Latest = results[i].latest
+				} else if dep.Current != "" {
 					dep.Latest = dep.Current
 				}
+				dep.Outdated = dep.Current != "" && dep.Latest != "" && dep.Current != dep.Latest
 				deps = append(deps, dep)
 			}
 		}
